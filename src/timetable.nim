@@ -156,7 +156,7 @@ for kind, key, val in getopt():
   of cmdEnd: assert(false)
 
 let
-  cfg = read_cfg(config_location / "config.ini")
+  cfg = read_cfg(config_location / "config")
   data_location = config_location / "data.json"
 var courses: seq[Course]
 
