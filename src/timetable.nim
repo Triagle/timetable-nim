@@ -1,6 +1,6 @@
 import
   times, parsecfg, algorithm, os, sequtils, tables, strutils, marshal, httpclient,
-  options, xmltree, htmlparser, streams, strformat, terminal, parseopt2, ospaths
+  options, xmltree, htmlparser, streams, strformat, terminal, parseopt, ospaths
 import nimquery
 
 type
@@ -101,7 +101,7 @@ proc activities_allocated(courses: seq[Activity], allocated_activities: TableRef
 
 
 proc activities_after(courses: seq[Course], time: DateTime): auto =
-  courses.get_activities.filter_it(it.day == time.weekday and it.start.to_time > time.to_time)
+  courses.get_activities.filter_it(it.day == time.weekday and it.start.to_time > time.to_time).sorted do (a: Activity, b: Activity) -> auto: cmp(a.start.to_time, b.start.to_time)
 
 
 proc read_cfg(path: string): auto =
