@@ -22,6 +22,7 @@ home of the data and configuration. The only file you're interested in is the
 activities within those subjects you're allocated to.
 
 #+BEGIN_SRC conf
+  # Save this to ~/path/to/timetable_config/config
   [course/CHEM211]
   year=2018
   semester=1
