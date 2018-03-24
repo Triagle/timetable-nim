@@ -1,0 +1,71 @@
+#+TITLE: Timetable
+
+A simple nim client for displaying and managing your UC timetable.
+
+* Installation
+To install this program make sure you have =nimble= installed first and then run
+the following:
+
+#+BEGIN_SRC shell
+  git clone https://github.com/Triagle/timetable
+  cd timetable
+  nimble install
+#+END_SRC
+
+Make sure you have ~/.nimble/bin (or other nimble bin path) in your $PATH.
+* Usage
+
+The first step to usage is the timetable config directory. You can create this
+anywhere (its location is passed as a parameter to the executable), and it's the
+home of the data and configuration. The only file you're interested in is the
+=config= file, which is the file that defines the subjects you take, and what
+activities within those subjects you're allocated to.
+
+#+BEGIN_SRC conf
+  # Save this to ~/path/to/timetable_config/config
+  [course/CHEM211]
+  year=2018
+  semester=1
+
+  [course/COSC261]
+  year=2018
+  semester=1
+
+  [course/ECON104]
+  year=2018
+  semester=1
+
+  [course/ECON105]
+  year=2018
+  semester=1
+
+  [COSC261/Computer_Lab_A]
+  activity=2
+
+  [ECON104/Tutorial_A]
+  activity=03
+#+END_SRC
+
+A course is declared as a "course/" section, and in here you define the year the
+course is being taken and the semester the course is being taken. Then you have
+a number of activity sections (e.g COSC261/Computer_Lab_A, replace " " with _ in
+the names) which define the activity you're taking in a particular section. The
+activity string can be sourced from the university course page, e.g [[http://www.canterbury.ac.nz/courseinfo/GetCourseDetails.aspx?course=ECON104&occurrence=18S1(C)&year=2018][ECON 104]].
+Note that the activity you take is not necessarily an integer, and you must
+specify the full activity id (03, not 3 in the case of ECON104) for it to be
+recognized. The default for any sections not selected is "1" or "1" preceded by
+any number of zeros.
+
+Usage on the command line is pretty succinctly explained below:
+
+#+BEGIN_SRC shell
+  # Default command lists everything you have on today
+  # Initial run may be slow, it's downloading the course data needed.
+  timetable ~/.config/timetable # or what ever path you choose, make an alias like tt="timetable ~/.config/timetable"
+  # Get the activities on Friday
+  timetable --on=Friday ~/.config/timetable
+  # Get the next activity
+  timetable ~/.config/timetable --next
+  # Get the next activity, but only show the time left
+  timetable ~/.config/timetable --next --time
+#+END_SRC
