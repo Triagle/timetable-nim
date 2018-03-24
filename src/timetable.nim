@@ -4,14 +4,12 @@ import
 import nimquery
 
 type
+  Interval[A] = tuple[lower: Option[A], upper: Option[A], lower_closed: bool, upper_closed: bool]
+
   Location = ref object
     name*: string
-    year*: BiggestInt
-    valid_dates*: seq[DateTime]
+    weeks*: seq[Interval[Time]]
 
-  Day = enum
-    Monday, Tuesday, Wednesday, Thursday, Friday
-    #
   Activity = ref object
     id*: string
     course*: string
@@ -27,17 +25,66 @@ type
     semester*: BiggestInt
     activities*: seq[Activity]
 
-proc `$`(x: Location): string =
-  "Location($1, $2)" % [x.name, $x.year]
-
-proc `$`(x: Activity): string =
-  "Activity($1, $2, $3, $4)" % [x.id, x.name, $x.day, $x.start, $x.location]
-
-proc `$`(x: Course): string =
-  "Course($1, $2, $3, $4)" % [x.title, $x.year, $x.semester, $x.activities]
+proc satisfied_by[A](interval: Interval[A], member: A): bool =
+  let
+    satisfies_upper = interval.upper.map(proc (v: A): bool =
+                                             if interval.upper_closed: member <= v else: member < v)
+    satisfies_lower = interval.lower.map(proc (v: A): bool =
+                                             if interval.lower_closed: member >= v else: member > v)
+  if interval.lower.is_none:
+    satisfies_upper.get(false)
+  elif interval.upper.is_none:
+    satisfies_lower.get(false)
+  else:
+    satisfies_lower.get and satisfies_upper.get
 
 proc to_day(x: string): WeekDay =
-  ({"Monday": dMon, "Tuesday": dTue, "Wednesday": dWed, "Thursday": dThu, "Friday": dFri}.to_table)[x]
+  ({"Monday": dMon, "Tuesday": dTue, "Wednesday": dWed, "Thursday": dThu, "Friday": dFri, "Saturday": dSat, "Sunday": dSun}.to_table)[x]
+
+proc maybe_get[T](data: openArray[T], index: int): Option[T] =
+  if index < 0 or index >= data.len:
+    none(T)
+  else:
+    some(data[index])
+
+proc parse_datestring(datestring: string): DateTime =
+  let
+    tokens = datestring.split("/")
+
+  result = now()
+  result.month = Month(tokens[1].parse_int)
+  result.monthday = tokens[0].parse_int
+
+
+proc parse_locations(data: XmlNode): auto =
+  var
+    cur_location: Option[string]
+    weeks = new_seq[Interval[Time]]()
+
+  result = new_seq[Location]()
+  for child in data.items:
+    if child.kind == xnText and child.inner_text.strip.len > 0:
+      let date_intervals = child.inner_text.strip(chars={'(', ')'}).split(", ").map_it(it.strip.split("-"))
+      for tokens in date_intervals:
+        let
+          lower_bound = tokens.maybe_get(0).map(proc (d: string): auto = d.parse_datestring.to_time)
+          upper_bound = if tokens.maybe_get(1).is_none: lower_bound else: tokens.maybe_get(1).map(proc (d: string): auto = d.parse_datestring.to_time)
+        weeks.add((lower: lower_bound,
+                  upper: upper_bound,
+                  lower_closed: true,
+                  upper_closed: true))
+    elif child.kind == xnElement and child.tag == "a":
+      if cur_location.is_some:
+        result.add(Location(name: cur_location.get, weeks: weeks))
+        weeks = new_seq[Interval[Time]]()
+        cur_location = none(string)
+      cur_location = some(child.inner_text)
+  if cur_location.is_some:
+    result.add(Location(name: cur_location.get, weeks: weeks))
+
+
+proc `$`(l: Location): auto =
+  fmt"Location({l.name}, {l.weeks})"
 
 proc parse_activity(course: string, header: XmlNode, data: XmlNode): auto =
   let
@@ -45,9 +92,9 @@ proc parse_activity(course: string, header: XmlNode, data: XmlNode): auto =
     id = data.querySelector("td[data-title^=\"Activity\"]").inner_text
     day = data.querySelector("td[data-title^=\"Day\"]").inner_text
     act_time = data.querySelector("td[data-title^=\"Time\"]").inner_text
+    locations = data.querySelector("td[data-title^=\"Location\"]").parse_locations
     times = map(act_time.split({'-'}), proc (value: string): auto = parse(value.strip, "HH:mm"))
-
-  Activity(id: id, name: title, course: course, day: day.to_day, start: times[0], endtime: times[1], location: @[])
+  Activity(id: id, name: title, course: course, day: day.to_day, start: times[0], endtime: times[1], location: locations)
 
 
 proc get_course(course: Course): auto =
@@ -55,6 +102,7 @@ proc get_course(course: Course): auto =
   let
     url = fmt"http://www.canterbury.ac.nz/courseinfo/GetCourseDetails.aspx?course={course.title}&occurrence={course.year mod 100}S{course.semester}(C)&year={course.year}"
     html = parse_html(new_string_stream(client.get_content(url)))
+
     activity_table = html.querySelector("table#RepeatTable")
 
   var
@@ -71,15 +119,6 @@ proc get_course(course: Course): auto =
       activities.add(activity)
 
   Course(title: course.title, year: course.year, semester: course.semester, activities: activities)
-
-proc group[T; K](arr: seq[T], key: proc (x: T): K {.closure.}): seq[seq[T]] =
-  result = new_seq[seq[T]]()
-  var last = none(T)
-  for el in arr:
-    if last.is_none or key(el) != key(last.get()):
-      last = some(el)
-      result.add(new_seq[T]())
-    result[result.len - 1].add(el)
 
 proc get_activities(courses: seq[Course]): auto =
   courses.foldl(concat(a, b.activities), new_seq[Activity]())
@@ -124,23 +163,25 @@ proc read_cfg(path: string): auto =
   (courses: courses, selected_activities: tbl)
 
 
-proc print_activity(a: Activity) =
+proc print_activity(date: DateTime, a: Activity) =
   let
     start_string = a.start.format("h:mmtt")
     end_string = a.endtime.format("h:mmtt")
-    activity_fmt = fmt" {a.name} @ {start_string} - {end_string}"
+    locations = a.location.filter_it(it.weeks.len == 0 or any(it.weeks, proc (i: Interval[Time]): bool = i.satisfied_by(date.to_time)))
+    location_string = locations.map_it(it.name).join(",")
+    activity_fmt = fmt" {a.name} :: {start_string} - {end_string} @ {location_string}"
+
   styled_echo(styleDim, a.course, resetStyle, activity_fmt)
 
-proc print_timetable(day: WeekDay, activities: seq[Activity]) =
-  styled_echo("Timetable for ", styleDim, $day, resetStyle)
+proc print_timetable(date: DateTime, activities: seq[Activity]) =
+  styled_echo("Timetable for ", styleDim, $date.weekday, resetStyle)
   echo "---"
   for a in activities:
-    print_activity(a)
+    print_activity(date, a)
 
 
 var
   cur = now()
-  day_filter = cur.weekday
   next_flag = false
   show_full = true
   config_location = "."
@@ -150,7 +191,7 @@ for kind, key, val in getopt():
   of cmdArgument: config_location = key
   of cmdLongOption, cmdShortOption:
     case key
-    of "on", "o": day_filter = val.to_day
+    of "on", "o": cur = (cur.to_time - (ord(cur.weekday) - ord(val.to_day)).days).local
     of "next", "n": next_flag = true
     of "time": show_full = false
   of cmdEnd: assert(false)
@@ -159,27 +200,27 @@ let
   cfg = read_cfg(config_location / "config")
   data_location = config_location / "data.json"
 var courses: seq[Course]
-
 if file_exists(data_location):
   var data = new_file_stream(data_location, fmRead)
-  defer: data.close()
   load(data, courses)
+  defer: data.close()
 else:
   courses = map(cfg.courses, get_course)
   var outf = new_file_stream(data_location, fmWrite)
-  defer: outf.close()
   store(outf, courses)
+  defer: outf.close()
 
 if next_flag == false:
-  let classes = courses.activities_on(day_filter).activities_allocated(cfg.selected_activities)
-  print_timetable(day_filter, classes)
+  let classes = courses.activities_on(cur.weekday).activities_allocated(cfg.selected_activities)
+  print_timetable(cur, classes)
 else:
+  let cur = now()
   let next_classes = courses.activities_after(cur).activities_allocated(cfg.selected_activities)
   if next_classes.len == 0:
     echo "-"
   elif show_full:
     let next_class = next_classes[0]
-    print_activity(next_class)
+    print_activity(cur, next_class)
   else:
     let
       next_class = next_classes[0]
