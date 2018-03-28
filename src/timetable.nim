@@ -18,6 +18,7 @@ type
     start*: DateTime
     endtime*: DateTime
     location*: seq[Location]
+    weeks: seq[Interval[Time]]
 
   Course = ref object
     title*: string
@@ -55,6 +56,21 @@ proc parse_datestring(datestring: string): DateTime =
   result.month = Month(tokens[1].parse_int)
   result.monthday = tokens[0].parse_int
 
+proc parse_interval(data: string, format: string): auto =
+  let
+    tokens = data.split("-").map_it(it.strip.parse(format).to_time)
+    lower_bound = tokens.maybe_get(0)
+    upper_bound = tokens.maybe_get(1)
+
+  (lower: lower_bound, upper: upper_bound, lower_closed: true, upper_closed: true)
+
+
+proc parse_weeks(data: XmlNode): auto =
+  result = new_seq[Interval[Time]]()
+  for child in data.items:
+    if child.kind == xnText and child.inner_text.strip.len > 0:
+      result.add(child.inner_text.parse_interval("d MMM"))
+
 
 proc parse_locations(data: XmlNode): auto =
   var
@@ -82,7 +98,6 @@ proc parse_locations(data: XmlNode): auto =
   if cur_location.is_some:
     result.add(Location(name: cur_location.get, weeks: weeks))
 
-
 proc `$`(l: Location): auto =
   fmt"Location({l.name}, {l.weeks})"
 
@@ -93,8 +108,9 @@ proc parse_activity(course: string, header: XmlNode, data: XmlNode): auto =
     day = data.querySelector("td[data-title^=\"Day\"]").inner_text
     act_time = data.querySelector("td[data-title^=\"Time\"]").inner_text
     locations = data.querySelector("td[data-title^=\"Location\"]").parse_locations
+    weeks = data.querySelector("td[data-title^=\"Weeks\"]").parse_weeks
     times = map(act_time.split({'-'}), proc (value: string): auto = parse(value.strip, "HH:mm"))
-  Activity(id: id, name: title, course: course, day: day.to_day, start: times[0], endtime: times[1], location: locations)
+  Activity(id: id, name: title, course: course, day: day.to_day, start: times[0], endtime: times[1], location: locations, weeks: weeks)
 
 
 proc get_course(course: Course): auto =
@@ -123,6 +139,10 @@ proc get_course(course: Course): auto =
 proc get_activities(courses: seq[Course]): auto =
   courses.foldl(concat(a, b.activities), new_seq[Activity]())
 
+
+proc any_satisfied[A](el: A, intervals: seq[Interval[A]]): bool =
+  any(intervals, proc (i: Interval[Time]): bool = i.satisfied_by(el))
+
 proc is_allocated(a: Activity, allocated_activities: TableRef[(string, string), string]): auto =
   let val = allocated_activities.get_or_default((a.course, a.name))
   if val.len > 0:
@@ -130,9 +150,9 @@ proc is_allocated(a: Activity, allocated_activities: TableRef[(string, string), 
   else:
     a.id.strip(chars={'0'}) == "1"
 
-proc activities_on(courses: seq[Course], day: WeekDay): auto =
+proc activities_on(courses: seq[Course], cur: DateTime, show_all: bool): auto =
   let
-    activities = courses.get_activities.filter_it(it.day == day)
+    activities = courses.get_activities.filter_it(it.day == cur.weekday and (any_satisfied(cur.to_time, it.weeks) or show_all))
   activities.sorted do (a: Activity, b: Activity) -> auto: cmp(a.start.to_time, b.start.to_time)
 
 proc activities_allocated(courses: seq[Activity], allocated_activities: TableRef[(string, string), string]): auto =
@@ -140,7 +160,7 @@ proc activities_allocated(courses: seq[Activity], allocated_activities: TableRef
 
 
 proc activities_after(courses: seq[Course], time: DateTime): auto =
-  courses.get_activities.filter_it(it.day == time.weekday and it.start.to_time > time.to_time).sorted do (a: Activity, b: Activity) -> auto: cmp(a.start.to_time, b.start.to_time)
+  courses.get_activities.filter_it(it.day == time.weekday and any_satisfied(time.to_time, it.weeks) and it.start.to_time > time.to_time).sorted do (a: Activity, b: Activity) -> auto: cmp(a.start.to_time, b.start.to_time)
 
 
 proc read_cfg(path: string): auto =
@@ -167,10 +187,9 @@ proc print_activity(date: DateTime, a: Activity) =
   let
     start_string = a.start.format("h:mmtt")
     end_string = a.endtime.format("h:mmtt")
-    locations = a.location.filter_it(it.weeks.len == 0 or any(it.weeks, proc (i: Interval[Time]): bool = i.satisfied_by(date.to_time)))
+    locations = a.location.filter_it(it.weeks.len == 0 or any_satisfied(date.to_time, it.weeks))
     location_string = locations.map_it(it.name).join(",")
     activity_fmt = fmt" {a.name} :: {start_string} - {end_string} @ {location_string}"
-
   styled_echo(styleDim, a.course, resetStyle, activity_fmt)
 
 proc print_timetable(date: DateTime, activities: seq[Activity]) =
@@ -184,6 +203,7 @@ var
   cur = now()
   next_flag = false
   show_full = true
+  show_all = false
   config_location = "."
 
 for kind, key, val in getopt():
@@ -193,6 +213,7 @@ for kind, key, val in getopt():
     case key
     of "on", "o": cur = (cur.to_time - (ord(cur.weekday) - ord(val.to_day)).days).local
     of "next", "n": next_flag = true
+    of "all", "a": show_all = true
     of "time": show_full = false
   of cmdEnd: assert(false)
 
@@ -211,7 +232,7 @@ else:
   defer: outf.close()
 
 if next_flag == false:
-  let classes = courses.activities_on(cur.weekday).activities_allocated(cfg.selected_activities)
+  let classes = courses.activities_on(cur, show_all).activities_allocated(cfg.selected_activities)
   print_timetable(cur, classes)
 else:
   let cur = now()
